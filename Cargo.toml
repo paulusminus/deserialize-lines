@@ -1,0 +1,15 @@
+[package]
+name = "json-lines"
+description = "read from file or string and parse as JSON lines"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+futures-util = "0.3.34"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1", features = ["fs"] }
+tokio-stream = { version = "0.1.19", features = ["io-util"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
