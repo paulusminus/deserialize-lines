@@ -1,5 +1,5 @@
 [package]
-name = "json-lines"
+name = "deserialize-lines"
 description = "read from file or string and parse as JSON lines"
 edition = "2024"
 license = "MIT"
