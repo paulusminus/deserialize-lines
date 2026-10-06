@@ -1,4 +1,5 @@
 [package]
+authors = ["Paul Min"]
 name = "deserialize-lines"
 description = "read from file or string and parse as JSON lines"
 edition = "2024"
