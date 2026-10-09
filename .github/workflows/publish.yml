@@ -10,8 +10,12 @@ env:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     steps:
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        components: clippy,rustfmt
     - uses: actions/checkout@v7
     - name: Build
       run: cargo publish
