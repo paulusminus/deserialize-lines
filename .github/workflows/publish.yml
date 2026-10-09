@@ -11,6 +11,9 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-slim
+    permissions:
+      id-token: write
+      contents: read
     steps:
     - uses: dtolnay/rust-toolchain@stable
       with:
