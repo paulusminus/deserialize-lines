@@ -1,76 +1,80 @@
 #![doc = include_str!("../README.md")]
 
 use futures_util::{
-    AsyncBufRead, AsyncBufReadExt, Stream, TryStreamExt, io::Lines, stream::AndThen,
+    AsyncBufRead, AsyncBufReadExt, Stream, StreamExt,
+    io::{AllowStdIo, BufReader, Lines},
+    stream::Map,
 };
 use std::{
     error::Error,
-    io::Result,
+    io::{Read, Result},
     pin::Pin,
     task::{Context, Poll},
 };
 
-/// Convert std::error::Error error to std::io::Error error
-pub trait ErrIntoIOError<T> {
-    fn err_into_io_error(self) -> Result<T>;
+/// Make anything that implements [`std::io::Read`] a Async BufReader
+pub trait IntoAsyncBufRead: Read + Sized {
+    fn into_async_bufreader(self) -> BufReader<AllowStdIo<Self>>;
 }
 
-impl<E: Error + Send + Sync + 'static, T> ErrIntoIOError<T> for std::result::Result<T, E> {
-    fn err_into_io_error(self) -> Result<T> {
+impl<R: Read + Sized> IntoAsyncBufRead for R {
+    fn into_async_bufreader(self) -> BufReader<AllowStdIo<Self>> {
+        let io = AllowStdIo::new(self);
+        BufReader::new(io)
+    }
+}
+
+/// Convert std::error::Error error to std::io::Error error
+pub trait ErrIntoIO<T> {
+    fn err_into_io(self) -> Result<T>;
+}
+
+impl<E: Error + Send + Sync + 'static, T> ErrIntoIO<T> for std::result::Result<T, E> {
+    fn err_into_io(self) -> Result<T> {
         self.map_err(std::io::Error::other)
     }
 }
 
 /// DeserializeLines is now a trait. It makes chaining easier.
 pub trait DeserializeLines: AsyncBufRead + Sized {
-    fn deserialize_lines<O, F, Fut>(self, deserializer: F) -> DeserializedStream<O, Self, F, Fut>
+    fn deserialize_lines<O, F>(self, deserializer: F) -> ObjectsStream<Self, F>
     where
-        F: Fn(String) -> Fut,
-        Fut: Future<Output = Result<O>>;
+        F: Fn(Result<String>) -> Result<O>;
 }
 
 impl<R: AsyncBufRead + Sized> DeserializeLines for R {
-    fn deserialize_lines<O, F, Fut>(self, deserializer: F) -> DeserializedStream<O, R, F, Fut>
+    fn deserialize_lines<O, F>(self, deserializer: F) -> ObjectsStream<Self, F>
     where
-        F: Fn(String) -> Fut,
-        Fut: Future<Output = Result<O>>,
+        F: Fn(Result<String>) -> Result<O>,
     {
-        DeserializedStream {
-            objects: self.lines().and_then(deserializer),
+        ObjectsStream {
+            inner: self.lines().map(deserializer),
         }
     }
 }
 
-/// The result of asynchronously reading lines and deserializing them
 #[pin_project::pin_project]
-pub struct DeserializedStream<
-    O,
-    R: AsyncBufRead,
-    F: Fn(String) -> Fut,
-    Fut: Future<Output = Result<O>>,
-> {
+pub struct ObjectsStream<R, F> {
     #[pin]
-    objects: AndThen<Lines<R>, Fut, F>,
+    inner: Map<Lines<R>, F>,
 }
 
-impl<R, O, F, Fut> Stream for DeserializedStream<O, R, F, Fut>
+impl<O, R, F> Stream for ObjectsStream<R, F>
 where
+    F: Fn(Result<String>) -> Result<O>,
     R: AsyncBufRead,
-    F: Fn(String) -> Fut,
-    Fut: Future<Output = Result<O>>,
 {
     type Item = Result<O>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.project().objects.poll_next(cx)
+        self.project().inner.poll_next(cx)
     }
 }
-
 #[cfg(test)]
 mod test {
     use std::fs::File;
 
-    use super::{DeserializeLines, ErrIntoIOError, Result};
-    use futures_util::{StreamExt, TryStreamExt, io::AllowStdIo};
+    use super::{DeserializeLines, ErrIntoIO, IntoAsyncBufRead};
+    use futures_util::{StreamExt, TryStreamExt};
     use serde::Deserialize;
 
     #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -80,13 +84,10 @@ mod test {
     }
 
     #[tokio::test]
-    async fn deserialize_single_lines() {
-        async fn deserialize(s: String) -> Result<Person> {
-            serde_json::from_str(&s).err_into_io_error()
-        }
+    async fn deserialize_single_line() {
         let persons = "{\"name\": \"Paul Min\"}"
             .as_bytes()
-            .deserialize_lines(deserialize)
+            .deserialize_lines(|r| r.and_then(|s| serde_json::from_str::<Person>(&s).err_into_io()))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -96,14 +97,13 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_deserialize_lines() {
-        async fn deserialize(s: String) -> Result<Person> {
-            serde_json::from_str(&s).err_into_io_error()
-        }
+    async fn deserialize_multiple_lines() {
         let persons =
             "{\"name\": \"Paul Min\", \"age\": 30}\n{\"name\": \"John Doe\", \"age\": 25}"
                 .as_bytes()
-                .deserialize_lines(deserialize)
+                .deserialize_lines(|r| {
+                    r.and_then(|s| serde_json::from_str::<Person>(&s).err_into_io())
+                })
                 .try_collect::<Vec<_>>()
                 .await
                 .unwrap();
@@ -123,15 +123,25 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_file() {
-        let f = File::open("test.ndjson").unwrap();
-        let lines = futures_util::io::BufReader::new(AllowStdIo::new(f));
+    async fn deserialize_file() {
+        let lines = File::open("test.ndjson").unwrap().into_async_bufreader();
         let mut persons = lines
-            .deserialize_lines(
-                |s| async move { serde_json::from_str::<Person>(&s).err_into_io_error() },
-            )
+            .deserialize_lines(|r| r.and_then(|s| serde_json::from_str::<Person>(&s).err_into_io()))
             .boxed();
         let first_person = persons.try_next().await.unwrap().unwrap();
         assert_eq!(first_person.name, *"Paul Min");
+    }
+
+    #[tokio::test]
+    async fn deserialize_sync_converter() {
+        let persons = "{\"name\": \"Paul Min\"}"
+            .as_bytes()
+            .deserialize_lines(|r| r.and_then(|s| serde_json::from_str::<Person>(&s).err_into_io()))
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let paul = persons.get(0).unwrap();
+        assert_eq!(paul.name, *"Paul Min");
+        assert_eq!(paul.age, None);
     }
 }
