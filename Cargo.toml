@@ -5,7 +5,7 @@ description = "read from file or string and parse as JSON lines"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/paulusminus/json-lines"
-version = "0.2.0"
+version = "0.3.0"
 
 [dependencies]
 futures-util = "0.3.34"
