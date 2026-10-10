@@ -4,7 +4,7 @@ name = "deserialize-lines"
 description = "read from file or string and parse as JSON lines"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/paulusminus/json-lines"
+repository = "https://github.com/paulusminus/deserialize-lines"
 version = "0.3.0"
 
 [dependencies]
