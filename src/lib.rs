@@ -1,35 +1,30 @@
-use futures_util::{
-    Stream, TryStreamExt,
-    future::{Ready, ready},
-    stream::AndThen,
-};
-use serde::de::DeserializeOwned;
+use futures_util::{Stream, TryStreamExt, stream::AndThen};
 use std::{
-    io::{Error, Result},
+    io::Result,
     pin::Pin,
     task::{Context, Poll},
 };
 use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 use tokio_stream::wrappers::LinesStream;
 
-type Deserializer<O> = fn(String) -> Ready<Result<O>>;
-
 /// DeserializeLines is now a trait. It makes chaining easier.
 pub trait DeserializeLines {
-    fn deserialize_lines<O: DeserializeOwned>(self) -> Objects<O, Self>
+    fn deserialize_lines<O, F, Fut>(self, deserializer: F) -> DeserializedStream<O, Self, F, Fut>
     where
-        Self: AsyncBufRead + Sized;
+        Self: AsyncBufRead + Sized,
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = Result<O>>;
 }
 
 impl<R: AsyncBufRead> DeserializeLines for R {
-    fn deserialize_lines<O: DeserializeOwned>(self) -> Objects<O, R>
+    fn deserialize_lines<O, F, Fut>(self, deserializer: F) -> DeserializedStream<O, R, F, Fut>
     where
         Self: AsyncBufRead + Sized,
+        F: Fn(String) -> Fut,
+        Fut: Future<Output = Result<O>>,
     {
-        let converter: Deserializer<O> =
-            |s| ready(serde_json::from_str::<O>(&s).map_err(Error::other));
-        Objects {
-            objects: Lines::from(self).and_then(converter),
+        DeserializedStream {
+            objects: Lines::from(self).and_then(deserializer),
         }
     }
 }
@@ -42,12 +37,22 @@ pub struct Lines<R: AsyncBufRead> {
 
 /// The result of asynchronously reading lines and converting them to objects
 #[pin_project::pin_project]
-pub struct Objects<O: DeserializeOwned, R: AsyncBufRead> {
+pub struct DeserializedStream<
+    O,
+    R: AsyncBufRead,
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<O>>,
+> {
     #[pin]
-    objects: AndThen<Lines<R>, Ready<Result<O>>, Deserializer<O>>,
+    objects: AndThen<Lines<R>, Fut, F>,
 }
 
-impl<R: AsyncBufRead, O: DeserializeOwned> Stream for Objects<O, R> {
+impl<R, O, F, Fut> Stream for DeserializedStream<O, R, F, Fut>
+where
+    R: AsyncBufRead,
+    F: Fn(String) -> Fut,
+    Fut: Future<Output = Result<O>>,
+{
     type Item = Result<O>;
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.project().objects.poll_next(cx)
@@ -61,7 +66,10 @@ impl<R: AsyncBufRead> Stream for Lines<R> {
     }
 }
 
-impl<R: AsyncBufRead> From<R> for Lines<R> {
+impl<R> From<R> for Lines<R>
+where
+    R: AsyncBufRead,
+{
     fn from(reader: R) -> Self {
         Self {
             reader: LinesStream::new(reader.lines()),
@@ -71,6 +79,9 @@ impl<R: AsyncBufRead> From<R> for Lines<R> {
 
 #[cfg(test)]
 mod test {
+    use futures_util::future::ready;
+    use std::io::Error;
+
     use super::DeserializeLines;
     use futures_util::TryStreamExt;
 
@@ -80,7 +91,7 @@ mod test {
 
         let mut values = "{\"name\": \"Paul Min\"}"
             .as_bytes()
-            .deserialize_lines::<Value>()
+            .deserialize_lines(|s| ready(serde_json::from_str::<Value>(&s).map_err(Error::other)))
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
@@ -103,7 +114,9 @@ mod test {
         let persons =
             "{\"name\": \"Paul Min\", \"age\": 30}\n{\"name\": \"John Doe\", \"age\": 25}"
                 .as_bytes()
-                .deserialize_lines::<Person>()
+                .deserialize_lines(|s| {
+                    ready(serde_json::from_str::<Person>(&s).map_err(Error::other))
+                })
                 .try_collect::<Vec<_>>()
                 .await
                 .unwrap();
