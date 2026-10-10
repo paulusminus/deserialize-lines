@@ -1,11 +1,22 @@
-use futures_util::{Stream, TryStreamExt, stream::AndThen};
+use futures_util::{
+    AsyncBufRead, AsyncBufReadExt, Stream, TryStreamExt, io::Lines, stream::AndThen,
+};
 use std::{
+    error::Error,
     io::Result,
     pin::Pin,
     task::{Context, Poll},
 };
-use tokio::io::{AsyncBufRead, AsyncBufReadExt};
-use tokio_stream::wrappers::LinesStream;
+
+pub trait ErrIntoIO<T> {
+    fn err_into_io(self) -> Result<T>;
+}
+
+impl<E: Error + Send + Sync + 'static, T> ErrIntoIO<T> for std::result::Result<T, E> {
+    fn err_into_io(self) -> Result<T> {
+        self.map_err(std::io::Error::other)
+    }
+}
 
 /// DeserializeLines is now a trait. It makes chaining easier.
 pub trait DeserializeLines {
@@ -24,15 +35,9 @@ impl<R: AsyncBufRead> DeserializeLines for R {
         Fut: Future<Output = Result<O>>,
     {
         DeserializedStream {
-            objects: Lines::from(self).and_then(deserializer),
+            objects: self.lines().and_then(deserializer),
         }
     }
-}
-
-#[pin_project::pin_project]
-pub struct Lines<R: AsyncBufRead> {
-    #[pin]
-    reader: LinesStream<R>,
 }
 
 /// The result of asynchronously reading lines and converting them to objects
@@ -59,64 +64,43 @@ where
     }
 }
 
-impl<R: AsyncBufRead> Stream for Lines<R> {
-    type Item = Result<String>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.project().reader.poll_next(cx)
-    }
-}
-
-impl<R> From<R> for Lines<R>
-where
-    R: AsyncBufRead,
-{
-    fn from(reader: R) -> Self {
-        Self {
-            reader: LinesStream::new(reader.lines()),
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
-    use futures_util::future::ready;
-    use std::io::Error;
-
-    use super::DeserializeLines;
+    use super::{DeserializeLines, ErrIntoIO, Result};
     use futures_util::TryStreamExt;
+    use serde::Deserialize;
+
+    #[derive(Debug, Deserialize, PartialEq, Eq)]
+    struct Person {
+        name: String,
+        age: Option<u32>,
+    }
 
     #[tokio::test]
-    async fn test_deserialize_lines_short() {
-        use serde_json::Value;
-
-        let mut values = "{\"name\": \"Paul Min\"}"
+    async fn deserialize_single_lines() {
+        async fn deserialize(s: String) -> Result<Person> {
+            serde_json::from_str(&s).err_into_io()
+        }
+        let persons = "{\"name\": \"Paul Min\"}"
             .as_bytes()
-            .deserialize_lines(|s| ready(serde_json::from_str::<Value>(&s).map_err(Error::other)))
+            .deserialize_lines(deserialize)
             .try_collect::<Vec<_>>()
             .await
             .unwrap();
-        assert_eq!(
-            values[0].take().as_object().unwrap().get("name").unwrap(),
-            &Value::String("Paul Min".into())
-        );
+        let paul = persons.get(0).unwrap();
+        assert_eq!(paul.name, *"Paul Min");
+        assert_eq!(paul.age, None);
     }
 
     #[tokio::test]
     async fn test_deserialize_lines() {
-        use serde::{Deserialize, Serialize};
-
-        #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
-        struct Person {
-            name: String,
-            age: u32,
+        async fn deserialize(s: String) -> Result<Person> {
+            serde_json::from_str(&s).err_into_io()
         }
-
         let persons =
             "{\"name\": \"Paul Min\", \"age\": 30}\n{\"name\": \"John Doe\", \"age\": 25}"
                 .as_bytes()
-                .deserialize_lines(|s| {
-                    ready(serde_json::from_str::<Person>(&s).map_err(Error::other))
-                })
+                .deserialize_lines(deserialize)
                 .try_collect::<Vec<_>>()
                 .await
                 .unwrap();
@@ -125,11 +109,11 @@ mod test {
             vec![
                 Person {
                     name: "Paul Min".to_string(),
-                    age: 30
+                    age: Some(30),
                 },
                 Person {
                     name: "John Doe".to_string(),
-                    age: 25
+                    age: Some(25),
                 }
             ]
         );
