@@ -1,4 +1,4 @@
-# json-lines
+# parse-lines
 
 A rust crate for reading and parsing lines from anything implementing [`AsyncBufRead`](futures_util::AsyncBufRead).
 
