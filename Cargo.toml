@@ -4,8 +4,8 @@ name = "parse-lines"
 description = "read and parse lines from anything implementing AsyncBufRead"
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/paulusminus/deserialize-lines"
-version = "0.1.0"
+repository = "https://github.com/paulusminus/parse-lines"
+version = "0.1.1"
 
 [dependencies]
 futures-util = { version = "0.3.34", features = ["io"] }
