@@ -5,7 +5,7 @@ A rust crate for reading and parsing lines from anything implementing [`AsyncBuf
 ## Example
 
 ```
-  use deserialize_lines::{DeserializeLines, ErrIntoIO, Parser};
+  use parse_lines::{ParseLines, ErrIntoIO, Parser};
   use futures_util::{StreamExt, TryStreamExt};
   use serde::{Deserialize};
   use serde_json::from_str;
