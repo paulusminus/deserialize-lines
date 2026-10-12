@@ -3,6 +3,7 @@ authors = ["Paul Min"]
 name = "parse-lines"
 description = "read and parse lines from anything implementing AsyncBufRead"
 edition = "2024"
+exclude = [".github/"]
 license = "MIT"
 repository = "https://github.com/paulusminus/parse-lines"
 version = "0.2.0"
