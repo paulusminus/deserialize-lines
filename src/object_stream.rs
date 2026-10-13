@@ -1,4 +1,4 @@
-use super::{Parser, Result};
+use super::{BoxedError, IOResult};
 use futures_util::{AsyncBufRead, AsyncBufReadExt, Stream, io::Lines};
 use pin_project::pin_project;
 use std::{
@@ -7,17 +7,23 @@ use std::{
 };
 
 #[pin_project]
-pub struct ObjectsStream<O, R, E> {
+pub struct ObjectsStream<O, R, E, F>
+where
+    F: FnMut(String) -> Result<O, E>,
+    E: Into<BoxedError>,
+{
     #[pin]
     lines: Lines<R>,
-    parser: Parser<O, E>,
+    parser: F,
 }
 
-impl<O, R, E> ObjectsStream<O, R, E>
+impl<O, R, E, F> ObjectsStream<O, R, E, F>
 where
     R: AsyncBufRead,
+    F: FnMut(String) -> Result<O, E>,
+    E: Into<BoxedError>,
 {
-    pub fn new(reader: R, parser: Parser<O, E>) -> Self {
+    pub fn new(reader: R, parser: F) -> Self {
         Self {
             lines: reader.lines(),
             parser,
@@ -25,12 +31,13 @@ where
     }
 }
 
-impl<O, R, E> Stream for ObjectsStream<O, R, E>
+impl<O, R, E, F> Stream for ObjectsStream<O, R, E, F>
 where
     R: AsyncBufRead,
-    E: Into<Box<dyn std::error::Error + Send + Sync>>,
+    F: FnMut(String) -> Result<O, E>,
+    E: Into<BoxedError>,
 {
-    type Item = Result<O>;
+    type Item = IOResult<O>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.as_mut().project().lines.poll_next(cx).map(|opt| {
             opt.map(|r| {

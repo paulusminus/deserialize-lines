@@ -5,11 +5,14 @@ use futures_util::{
     AsyncBufRead,
     io::{AllowStdIo, BufReader},
 };
-use std::io::{Read, Result};
+use std::{
+    error::Error,
+    io::{Read, Result as IOResult},
+};
 
 mod object_stream;
 
-type Parser<O, E> = fn(String) -> std::result::Result<O, E>;
+type BoxedError = Box<dyn Error + Send + Sync>;
 
 /// Make [`Read`] implement [`AsyncBufRead`] too
 pub trait IntoAsyncBufRead: Read + Sized {
@@ -22,7 +25,11 @@ impl<R: Read + Sized> IntoAsyncBufRead for R {}
 
 /// Extension methods for [`AsyncBufRead`] providing [`parse_lines`](ParseLines::parse_lines)
 pub trait ParseLines: AsyncBufRead + Sized {
-    fn parse_lines<O, E>(self, parser: Parser<O, E>) -> ObjectsStream<O, Self, E> {
+    fn parse_lines<O, E, F>(self, parser: F) -> ObjectsStream<O, Self, E, F>
+    where
+        F: FnMut(String) -> Result<O, E>,
+        E: Into<BoxedError>,
+    {
         ObjectsStream::new(self, parser)
     }
 }
@@ -94,5 +101,23 @@ mod test {
         let mut persons = lines.parse_lines(|s| from_str::<Person>(&s)).boxed();
         let first_person = persons.try_next().await.unwrap().unwrap();
         assert_eq!(first_person.name, *"Paul Min");
+    }
+
+    #[tokio::test]
+    async fn fn_mut_closure() {
+        let mut count = 0;
+        let lines = File::open("test.ndjson").unwrap().into_async_bufreader();
+        let mut persons = lines
+            .parse_lines(|s| {
+                count += 1;
+                from_str::<Person>(&s)
+            })
+            .boxed();
+        let first_person = persons.try_next().await.unwrap().unwrap();
+        let second_person = persons.try_next().await.unwrap().unwrap();
+        drop(persons);
+        assert_eq!(first_person.name, *"Paul Min");
+        assert_eq!(second_person.name, *"Pietje Puk");
+        assert_eq!(count, 2);
     }
 }
