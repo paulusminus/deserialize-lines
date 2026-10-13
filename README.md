@@ -1,6 +1,6 @@
 # parse-lines
 
-A rust crate for reading and parsing lines from anything implementing [`AsyncBufRead`](futures_util::AsyncBufRead) from the futures crate.
+A rust crate for reading and parsing lines from anything implementing [`AsyncBufRead`](https://docs.rs/futures-io/latest/futures_io/trait.AsyncBufRead.html) from the futures crate.
 
 ## Example
 
